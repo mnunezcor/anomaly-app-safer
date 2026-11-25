@@ -1,4 +1,4 @@
-transaction_id,amount,customer_typical_amount,transactions_last_hour,minutes_since_previous,account_age_days,needs_review
+transaction_id,customer_typical_amount,transactions_last_hour,minutes_since_previous,account_age_days,needs_review
 VA-0000,28.72,24.27,1,183.881,314,0
 VA-0001,93.03,80.49,2,16.567,1066,0
 VA-0002,157.69,64.64,1,191.613,288,0
