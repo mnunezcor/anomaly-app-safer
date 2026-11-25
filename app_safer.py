@@ -143,7 +143,7 @@ def validate_stream_file(stream):
     for column, invalid_rule in range_rules.items():
         invalid = stream[column].notna() & invalid_rule(stream[column])
         if invalid.any():
-            rows = (stream.index[invalid] + 2).tolist()
+            rows = (np.flatnonzero(invalid.to_numpy(dtype=bool)) + 2).tolist()
             problems.append(
                 f"Invalid value in '{column}' at CSV row(s): {rows}. "
                 "Amounts must be greater than zero; counts, gaps, and ages "
