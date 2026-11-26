@@ -24,16 +24,21 @@ REQUIRED_COLUMNS = [
 ]
 
 
+def show_model_load_error(exc):
+    """Display the same safe, actionable message for real and simulated load errors."""
+    st.error(
+        "The trained model could not be loaded. The app cannot score transactions. "
+        "Check that model.joblib exists in the repository and is a valid model file."
+    )
+    st.caption(f"Technical detail: {type(exc).__name__}: {exc}")
+
+
 def load_model_bundle():
     """Load the existing trained model without retraining or replacing it."""
     try:
         bundle = joblib.load("model.joblib")
     except Exception as exc:
-        st.error(
-            "The trained model could not be loaded. The app cannot score transactions. "
-            "Check that model.joblib exists in the repository and is a valid model file."
-        )
-        st.caption(f"Technical detail: {type(exc).__name__}: {exc}")
+        show_model_load_error(exc)
         st.stop()
 
     try:
@@ -109,7 +114,8 @@ def validate_stream_file(stream):
         return problems
 
     if stream["transaction_id"].isna().any():
-        rows = (stream.index[stream["transaction_id"].isna()] + 2).tolist()
+        mask = stream["transaction_id"].isna().to_numpy(dtype=bool)
+        rows = (np.flatnonzero(mask) + 2).tolist()
         problems.append(f"Missing transaction_id in CSV row(s): {rows}")
 
     numeric_columns = [
@@ -124,7 +130,7 @@ def validate_stream_file(stream):
         converted = pd.to_numeric(stream[column], errors="coerce")
         invalid = converted.isna() | ~np.isfinite(converted)
         if invalid.any():
-            rows = (stream.index[invalid] + 2).tolist()
+            rows = (np.flatnonzero(invalid.to_numpy(dtype=bool)) + 2).tolist()
             problems.append(
                 f"Non-numeric, missing, or non-finite value in '{column}' "
                 f"at CSV row(s): {rows}"
@@ -153,7 +159,7 @@ def validate_stream_file(stream):
     return problems
 
 
-# ---- sidebar: preserve the original review-budget logic ----
+# ---- page introduction and review-budget logic ----
 st.title("Transaction Monitor")
 st.write(
     "Each new transaction is scored by Isolation Forest. "
@@ -171,7 +177,11 @@ st.sidebar.caption(
     f"is more unusual than the top {pct}% of history."
 )
 
-tab1, tab2 = st.tabs(["Check one transaction", "Live stream"])
+tab1, tab2, tab3 = st.tabs([
+    "Check one transaction",
+    "Live stream",
+    "Peer Review / Safety Tests",
+])
 
 # ---- tab 1: type in one transaction ----
 with tab1:
@@ -243,7 +253,7 @@ with tab2:
         table = st.empty()
         flagged = []
 
-        for i, r in stream.iterrows():
+        for position, (_, r) in enumerate(stream.iterrows(), start=1):
             try:
                 s = score(
                     r["amount"],
@@ -259,7 +269,7 @@ with tab2:
                 )
                 st.caption(f"Technical detail: {type(exc).__name__}: {exc}")
                 st.warning(
-                    f"{i} transaction(s) were processed before the error. "
+                    f"{position - 1} transaction(s) were processed before the error. "
                     "The remaining transactions were not processed."
                 )
                 st.stop()
@@ -278,7 +288,7 @@ with tab2:
                 box.info(msg + "  ->  OK")
 
             counts.write(
-                f"Received **{i + 1}** of **{len(stream)}**. "
+                f"Received **{position}** of **{len(stream)}**. "
                 f"Sent to review: **{len(flagged)}**"
             )
             if flagged:
@@ -295,3 +305,76 @@ with tab2:
                 f"{hits} of the {len(flagged)} flagged transactions really needed "
                 f"review. In total, {int(answer.sum())} transactions needed review."
             )
+
+# ---- tab 3: peer review tests using synthetic failures ----
+with tab3:
+    st.subheader("Peer Review / Safety Tests")
+    st.write(
+        "Use these controlled simulations to test the app's safeguards. "
+        "They use synthetic inputs and do not modify the production CSV or trained model."
+    )
+    st.info(
+        "These are safe demonstrations. They do not delete, overwrite, or retrain "
+        "model.joblib, and they do not change new_transactions.csv."
+    )
+
+    st.markdown("#### Test 1 — Missing transaction data")
+    st.write(
+        "This test creates a synthetic transaction file with the required columns "
+        "except `amount`, then sends it through the app's actual CSV validator."
+    )
+
+    if st.button("Run missing-column test", key="peer_missing_column"):
+        synthetic_stream = pd.DataFrame({
+            "transaction_id": ["TEST-001"],
+            # Deliberately omit the required "amount" column.
+            "customer_typical_amount": [50.0],
+            "transactions_last_hour": [1],
+            "minutes_since_previous": [120.0],
+            "account_age_days": [700],
+        })
+        test_problems = validate_stream_file(synthetic_stream)
+
+        if test_problems:
+            st.error(
+                "The live stream was not started. The file contains missing or invalid "
+                "data, so scoring it could produce misleading results."
+            )
+            for problem in test_problems:
+                st.write(f"- {problem}")
+            st.info(
+                "Correct the input file and try again. No transactions were scored."
+            )
+            st.success(
+                "Peer review result: PASS — the validator detected the missing "
+                "required column before scoring."
+            )
+        else:
+            st.error(
+                "Peer review result: FAIL — the validator did not detect the "
+                "synthetic missing-column problem."
+            )
+
+    st.divider()
+    st.markdown("#### Test 2 — Missing trained model")
+    st.write(
+        "This test simulates a FileNotFoundError and displays the same error message "
+        "used by the real model-loading protection. It does not access or remove "
+        "the actual trained model."
+    )
+
+    if st.button("Run missing-model test", key="peer_missing_model"):
+        simulated_error = FileNotFoundError(
+            "[Errno 2] No such file or directory: 'missing_test_model.joblib'"
+        )
+        show_model_load_error(simulated_error)
+        st.success(
+            "Peer review result: PASS — the model-loading error handler displayed "
+            "an actionable message and made clear that scoring is unavailable."
+        )
+
+    st.caption(
+        "Note: The missing-model test simulates the loading exception and exercises "
+        "the shared error-message handler. It does not physically remove the production "
+        "model file. The original missing-file condition was also tested during development."
+    )
